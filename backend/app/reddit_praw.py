@@ -51,15 +51,20 @@ def _extract_top_comments(submission: praw.models.Submission, limit: int = 10) -
     submission.comments.replace_more(limit=0)
     top_comments = []
     for comment in submission.comments.list()[:limit]:
+        body = (comment.body or "").strip()
+        if body.lower() in {"[removed]", "[deleted]"}:
+            continue
         top_comments.append(
             {
                 "comment_id": comment.id,
-                "body": comment.body,
+                "body": body,
                 "author": str(comment.author) if comment.author else None,
                 "created_utc": comment.created_utc,
                 "score": comment.score,
                 "parent_id": comment.parent_id,
                 "permalink": f"https://www.reddit.com{comment.permalink}",
+                "post_title": submission.title,
+                "subreddit": str(submission.subreddit),
             }
         )
     return top_comments
@@ -110,3 +115,15 @@ def get_subreddit_posts(subreddit_name: str, k: int = 10, type: str = "hot") -> 
 
 def get_subreddit_hot_posts(subreddit_name: str, k: int = 10) -> List[Dict[str, Optional[str]]]:
     return get_subreddit_posts(subreddit_name, k=k, type="hot")
+
+
+def get_subreddit_metadata(subreddit_name: str) -> Dict[str, Optional[str]]:
+    reddit = _get_reddit_client()
+    subreddit = reddit.subreddit(subreddit_name)
+    return {
+        "name": f"r/{subreddit.display_name}",
+        "title": subreddit.title,
+        "description": subreddit.public_description or "",
+        "subscribers": subreddit.subscribers,
+        "url": subreddit.url,
+    }

@@ -14,6 +14,7 @@ def _extract_comment_texts(archetype: Dict[str, object]) -> List[str]:
 def add_archetype_topics(archetypes: List[Dict[str, object]], top_n: int = 5) -> List[Dict[str, object]]:
     try:
         from bertopic import BERTopic
+        from sklearn.feature_extraction.text import CountVectorizer
     except ImportError as exc:
         raise RuntimeError("bertopic is not installed. Run `pip install bertopic`.") from exc
 
@@ -24,7 +25,12 @@ def add_archetype_topics(archetypes: List[Dict[str, object]], top_n: int = 5) ->
             archetype["topic_comment_count"] = len(documents)
             continue
 
-        topic_model = BERTopic()
+        vectorizer = CountVectorizer(stop_words="english", ngram_range=(1, 2), min_df=2)
+        topic_model = BERTopic(
+            vectorizer_model=vectorizer,
+            min_topic_size=5,
+            calculate_probabilities=False,
+        )
         topics, _ = topic_model.fit_transform(documents)
         topic_info = topic_model.get_topic_info()
         enriched_topics = []

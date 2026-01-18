@@ -52,6 +52,11 @@ def add_product(name: str) -> Dict[str, object]:
         "name": name,
         "created_at": timestamp,
         "subreddits": [],
+        "archetypes": [],
+        "posts": [],
+        "topics_ready": False,
+        "satisfaction": {},
+        "satisfaction_history": [],
     }
     products.insert(0, record)
     _save_products(products)
@@ -87,6 +92,18 @@ def update_product(product_id: str, updates: Dict[str, object]) -> Optional[Dict
             _save_products(products)
             return updated
     return None
+
+
+def update_product_state(product_id: str, updates: Dict[str, object]) -> Optional[Dict[str, object]]:
+    product = get_product(product_id)
+    if not product:
+        return None
+    state_updates = {
+        "archetypes": updates.get("archetypes", product.get("archetypes", [])),
+        "posts": updates.get("posts", product.get("posts", [])),
+        "topics_ready": updates.get("topics_ready", product.get("topics_ready", False)),
+    }
+    return update_product(product_id, state_updates)
 
 
 def add_run(product_id: str, result: Dict[str, object]) -> Dict[str, object]:
