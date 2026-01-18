@@ -15,6 +15,8 @@ function App() {
   const [error, setError] = useState("");
   const [commentSort, setCommentSort] = useState("recent");
   const [expandedMetric, setExpandedMetric] = useState(null);
+  const [insights, setInsights] = useState([]);
+  const [showTimeline, setShowTimeline] = useState(false);
 
   const stats = useMemo(() => {
     if (!data) return null;
@@ -43,6 +45,42 @@ function App() {
     }
   };
 
+  const sendEvent = async (type, details = {}) => {
+    try {
+      await fetch("http://localhost:5000/api/events", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type,
+          product_id: selectedProduct?.product_id,
+          details,
+        }),
+      });
+    } catch (_) {
+      // ignore
+    }
+  };
+
+  const fetchInsights = async (lastAction = "") => {
+    if (!selectedProduct) return;
+    try {
+      const response = await fetch("http://localhost:5000/api/events/insights", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          product_id: selectedProduct.product_id,
+          last_action: lastAction,
+        }),
+      });
+      const payload = await response.json();
+      if (response.ok) {
+        setInsights(payload.suggestions || []);
+      }
+    } catch (_) {
+      setInsights([]);
+    }
+  };
+
   const loadProductDetail = async (productId) => {
     setLoading(true);
     setError("");
@@ -68,6 +106,7 @@ function App() {
   useEffect(() => {
     if (selectedProduct) {
       loadProductDetail(selectedProduct.product_id);
+      fetchInsights("product_selected");
     }
   }, [selectedProduct]);
 
@@ -123,6 +162,7 @@ function App() {
 
       setData(payload);
       setActiveIndex(0);
+      fetchInsights("pipeline_run_completed");
     } catch (err) {
       setError(err.message || "Pipeline failed");
     } finally {
@@ -148,6 +188,7 @@ function App() {
         throw new Error(payload.error || "Topic modeling failed");
       }
       setData(payload);
+      sendEvent("topic_model_ran");
     } catch (err) {
       setError(err.message || "Topic modeling failed");
     } finally {
@@ -173,6 +214,7 @@ function App() {
         throw new Error(payload.error || "Refresh failed");
       }
       setData(payload);
+      fetchInsights("refresh_completed");
     } catch (err) {
       setError(err.message || "Refresh failed");
     } finally {
@@ -184,6 +226,24 @@ function App() {
   const activeArchetype = archetypes[activeIndex];
   const satisfaction = data?.satisfaction;
   const satisfactionHistory = data?.satisfaction_history || [];
+  const perception = data?.perception || {};
+  const allComments = useMemo(() => {
+    if (!data?.archetypes) return [];
+    return data.archetypes.flatMap((item) => item.comments || []);
+  }, [data]);
+  const identityGroups = useMemo(() => {
+    const frames = perception?.identity_frames || [];
+    const grouped = { positive: [], mixed: [], negative: [], other: [] };
+    frames.forEach((frame) => {
+      const polarity = String(frame.polarity || "mixed").toLowerCase();
+      if (grouped[polarity]) {
+        grouped[polarity].push(frame);
+      } else {
+        grouped.other.push(frame);
+      }
+    });
+    return grouped;
+  }, [perception]);
   const activeMetricAverage = (() => {
     if (!satisfaction || !activeArchetype) return 0;
     const match = (satisfaction.archetypes || []).find(
@@ -226,6 +286,15 @@ function App() {
     }
     return (b.created_utc ?? 0) - (a.created_utc ?? 0);
   });
+
+  const findEvidenceComments = (ids = []) =>
+    ids
+      .map((id) =>
+        allComments.find(
+          (comment) => String(comment.comment_id) === String(id)
+        )
+      )
+      .filter(Boolean);
 
   return (
     <div className="app">
@@ -331,6 +400,17 @@ function App() {
           </div>
         </header>
 
+        {insights.length > 0 && (
+          <div className="coach">
+            <h4>Insight Coach</h4>
+            <ul>
+              {insights.map((tip, idx) => (
+                <li key={idx}>{tip}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
         <section className="pipeline">
           <form onSubmit={runPipeline}>
             <input
@@ -344,6 +424,243 @@ function App() {
             </button>
           </form>
         </section>
+
+        {perception && (
+          <section className="detail">
+            <div className="detail-header">
+              <div>
+                <p className="eyebrow">Product Perception</p>
+                <h3>Identity, narratives, competitors, and emotion</h3>
+                <p className="lede">
+                  Generated from the full Reddit comment corpus for this product.
+                </p>
+              </div>
+            </div>
+            <div className="perception-grid">
+              <div className="perception-card">
+                <div className="board-header">
+                  <div>
+                    <h3>Identity Frames</h3>
+                    <p>How the community frames the product.</p>
+                  </div>
+                </div>
+                <div className="identity-list">
+                  {["positive", "mixed", "negative", "other"].map((group) => {
+                    const frames = identityGroups[group] || [];
+                    if (frames.length === 0) {
+                      return null;
+                    }
+                    return (
+                      <div key={group} className="identity-group">
+                        <h4 className="muted">{group}</h4>
+                        {frames.map((frame, idx) => (
+                          <button
+                            key={`${group}-${idx}`}
+                      type="button"
+                      className="identity-item"
+                      onClick={() =>
+                        setExpandedMetric(
+                          expandedMetric === `identity-${group}-${idx}`
+                            ? null
+                            : `identity-${group}-${idx}`
+                        )
+                      }
+                    >
+                      <div className="identity-top">
+                        <strong>{frame.label}</strong>
+                        <div className="identity-meta">
+                          <span className="chip">{frame.polarity || "mixed"}</span>
+                          <span>{Math.round((frame.strength || 0) * 100)}%</span>
+                        </div>
+                      </div>
+                      {expandedMetric === `identity-${group}-${idx}` && (
+                        <div className="metric-detail">
+                          <p>{frame.reasoning || "No reasoning provided."}</p>
+                          {frame.evidence_comment_ids &&
+                            frame.evidence_comment_ids.length > 0 && (
+                              <div className="metric-evidence">
+                                {findEvidenceComments(frame.evidence_comment_ids).map(
+                                  (comment) => (
+                                    <blockquote key={comment.comment_id}>{comment.body}</blockquote>
+                                  )
+                                )}
+                              </div>
+                            )}
+                        </div>
+                      )}
+                    </button>
+                        ))}
+                      </div>
+                    );
+                  })}
+                  {(perception.identity_frames || []).length === 0 && (
+                    <p className="muted">No frames extracted yet.</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="perception-card">
+                <div className="board-header">
+                  <div>
+                    <h3>Narratives</h3>
+                    <p>Stories and causal explanations.</p>
+                  </div>
+                </div>
+                <div className="narrative-list">
+                  {(perception.narratives || []).map((narrative, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      className="narrative-item"
+                      onClick={() =>
+                        setExpandedMetric(
+                          expandedMetric === `narrative-${idx}` ? null : `narrative-${idx}`
+                        )
+                      }
+                    >
+                      <div className="identity-top">
+                        <span className="chip">{narrative.type || "narrative"}</span>
+                        <strong>{narrative.template}</strong>
+                      </div>
+                      <p className="muted">{narrative.explanation}</p>
+                      {expandedMetric === `narrative-${idx}` && (
+                        <div className="metric-detail">
+                          <p>{narrative.reasoning || "No reasoning provided."}</p>
+                          {narrative.evidence_comment_ids &&
+                            narrative.evidence_comment_ids.length > 0 && (
+                              <div className="metric-evidence">
+                                {findEvidenceComments(narrative.evidence_comment_ids).map(
+                                  (comment) => (
+                                    <blockquote key={comment.comment_id}>
+                                      {comment.body}
+                                    </blockquote>
+                                  )
+                                )}
+                              </div>
+                            )}
+                        </div>
+                      )}
+                    </button>
+                  ))}
+                  {(perception.narratives || []).length === 0 && (
+                    <p className="muted">No narratives extracted yet.</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="perception-card">
+                <div className="board-header">
+                  <div>
+                    <h3>Competitor Anchoring</h3>
+                    <p>Who they compare against and why.</p>
+                  </div>
+                </div>
+                <div className="narrative-list">
+                  {(perception.competitors || []).map((comp, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      className="identity-item"
+                      onClick={() =>
+                        setExpandedMetric(
+                          expandedMetric === `competitor-${idx}` ? null : `competitor-${idx}`
+                        )
+                      }
+                    >
+                      <div className="identity-top">
+                        <strong>{comp.name}</strong>
+                        <span className="chip">{comp.stance || "mixed"}</span>
+                      </div>
+                      <p className="muted">
+                        Dimensions:{" "}
+                        {Array.isArray(comp.dimensions)
+                          ? comp.dimensions.join(", ")
+                          : comp.dimensions || "n/a"}
+                      </p>
+                      {expandedMetric === `competitor-${idx}` && (
+                        <div className="metric-detail">
+                          <p>{comp.reasoning || "No reasoning provided."}</p>
+                          {comp.evidence_comment_ids &&
+                            comp.evidence_comment_ids.length > 0 && (
+                              <div className="metric-evidence">
+                                {findEvidenceComments(comp.evidence_comment_ids).map(
+                                  (comment) => (
+                                    <blockquote key={comment.comment_id}>
+                                      {comment.body}
+                                    </blockquote>
+                                  )
+                                )}
+                              </div>
+                            )}
+                        </div>
+                      )}
+                    </button>
+                  ))}
+                  {(perception.competitors || []).length === 0 && (
+                    <p className="muted">No competitor comparisons yet.</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="perception-card">
+                <div className="board-header">
+                  <div>
+                    <h3>Emotion / Trust</h3>
+                    <p>Signal beyond satisfaction.</p>
+                  </div>
+                </div>
+                <div className="emotion-grid">
+                  {["trust", "hype", "disappointment", "frustration", "nostalgia"].map(
+                    (emo) => {
+                      const item = perception.emotion?.[emo] || {};
+                      return (
+                        <button
+                          key={emo}
+                          type="button"
+                          className="emotion-bar"
+                          onClick={() =>
+                            setExpandedMetric(
+                              expandedMetric === `emotion-${emo}` ? null : `emotion-${emo}`
+                            )
+                          }
+                        >
+                          <div className="emotion-label">
+                            <span>{emo}</span>
+                            <span>{item.score ?? 0}/100</span>
+                          </div>
+                          <div className="emotion-track">
+                            <div
+                              className="emotion-fill"
+                              style={{ width: `${Math.min(item.score ?? 0, 100)}%` }}
+                            />
+                          </div>
+                          {expandedMetric === `emotion-${emo}` && (
+                            <div className="metric-detail">
+                              <p>{item.reasoning || "No reasoning provided."}</p>
+                              <p>Confidence: {item.confidence ?? 0}</p>
+                              {item.evidence_comment_ids &&
+                                item.evidence_comment_ids.length > 0 && (
+                                  <div className="metric-evidence">
+                                    {findEvidenceComments(item.evidence_comment_ids).map(
+                                      (comment) => (
+                                        <blockquote key={comment.comment_id}>
+                                          {comment.body}
+                                        </blockquote>
+                                      )
+                                    )}
+                                  </div>
+                                )}
+                            </div>
+                          )}
+                        </button>
+                      );
+                    }
+                  )}
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
 
         <section className="board">
           <div className="board-header">
@@ -372,7 +689,10 @@ function App() {
                 className={`archetype-card ${
                   index === activeIndex ? "active" : ""
                 }`}
-                onClick={() => setActiveIndex(index)}
+                onClick={() => {
+                  setActiveIndex(index);
+                  sendEvent("archetype_viewed", { archetype: archetype.name });
+                }}
                 type="button"
               >
                 <span className="emoji">{archetype.emoji || "\u2605"}</span>
@@ -409,14 +729,22 @@ function App() {
                 <span>
                   {data?.topics_ready ? "Topics ready" : "Topics not generated"}
                 </span>
+              <button
+                type="button"
+                className="outline"
+                onClick={() => setShowTimeline((value) => !value)}
+              >
+                {showTimeline ? "Hide Timeline" : "View Timeline"}
+              </button>
               </div>
             </div>
             {activeArchetype.topics?.length > 0 && (
               <div className="topic-row">
                 {activeArchetype.topics.map((topic) => (
                   <div key={topic.topic_id} className="topic-chip">
-                    <strong>Topic {topic.topic_id}</strong>
+                    <strong>{topic.label || `Topic ${topic.topic_id}`}</strong>
                     <p>{topic.keywords.join(" · ")}</p>
+                    {topic.reasoning && <p className="muted">{topic.reasoning}</p>}
                   </div>
                 ))}
               </div>
@@ -487,7 +815,12 @@ function App() {
                           type="button"
                           className={`metric-card ${isOpen ? "active" : ""}`}
                           onClick={() =>
-                            setExpandedMetric(isOpen ? null : metricId)
+                            {
+                              setExpandedMetric(isOpen ? null : metricId);
+                              if (!isOpen) {
+                                sendEvent("metric_expanded", { metric: metric.metric });
+                              }
+                            }
                           }
                         >
                           <div className="metric-header">
@@ -548,6 +881,7 @@ function App() {
                         href={comment.permalink}
                         target="_blank"
                         rel="noreferrer"
+                        onClick={() => sendEvent("evidence_link_clicked")}
                       >
                         Open on Reddit
                       </a>
@@ -560,84 +894,167 @@ function App() {
         )}
 
         {satisfactionHistory.length > 0 && (
-          <section className="history">
-            <div className="board-header">
-              <div>
-                <h3>Satisfaction Timeline</h3>
-                <p>Overall score shifts after each refresh.</p>
-              </div>
-            </div>
-            <div className="timeline-chart">
-              <svg viewBox="0 0 600 220" preserveAspectRatio="none">
-                <defs>
-                  <linearGradient id="scoreGlow" x1="0" y1="0" x2="1" y2="0">
-                    <stop offset="0%" stopColor="#ff7f50" />
-                    <stop offset="100%" stopColor="#ffb347" />
-                  </linearGradient>
-                </defs>
-                {(() => {
-                  const width = 600;
-                  const height = 180;
-                  const padding = 20;
-                  const points = satisfactionHistory.map((entry, index) => {
-                    const x =
-                      satisfactionHistory.length === 1
-                        ? width / 2
-                        : padding +
-                          (index / (satisfactionHistory.length - 1)) *
-                            (width - padding * 2);
-                    const score = Math.min(Math.max(entry.overall_score ?? 0, 0), 100);
-                    const y =
-                      height - padding - (score / 100) * (height - padding * 2);
-                    return { x, y, score, entry };
-                  });
-                  if (points.length === 0) return null;
-                  const path = points
-                    .map((point, index) =>
-                      `${index === 0 ? "M" : "L"}${point.x},${point.y}`
-                    )
-                    .join(" ");
-                  return (
-                    <g>
-                      <path
-                        d={path}
-                        fill="none"
-                        stroke="url(#scoreGlow)"
-                        strokeWidth="4"
-                      />
-                      {points.map((point, index) => (
-                        <g key={`${point.entry.created_at}-${index}`}>
-                          <circle
-                            cx={point.x}
-                            cy={point.y}
-                            r="6"
-                            fill="#0c0f16"
-                            stroke="#ffb347"
-                            strokeWidth="3"
+          <section className={`history ${showTimeline ? "open" : ""}`}>
+            {showTimeline && (
+              <>
+                <div className="board-header">
+                  <div>
+                    <h3>Satisfaction Timeline</h3>
+                    <p>Overall score shifts after each refresh.</p>
+                  </div>
+                  {data?.delta_report?.summary && (
+                    <div className="status-pill">{data.delta_report.summary}</div>
+                  )}
+                </div>
+                <div className="timeline-chart">
+                  <svg viewBox="0 0 600 220" preserveAspectRatio="none">
+                    <defs>
+                      <linearGradient id="scoreGlow" x1="0" y1="0" x2="1" y2="0">
+                        <stop offset="0%" stopColor="#ff7f50" />
+                        <stop offset="100%" stopColor="#ffb347" />
+                      </linearGradient>
+                    </defs>
+                    {(() => {
+                      const width = 600;
+                      const height = 180;
+                      const padding = 20;
+                      const points = satisfactionHistory.map((entry, index) => {
+                        const x =
+                          satisfactionHistory.length === 1
+                            ? width / 2
+                            : padding +
+                              (index / (satisfactionHistory.length - 1)) *
+                                (width - padding * 2);
+                        const score = Math.min(Math.max(entry.overall_score ?? 0, 0), 100);
+                        const y =
+                          height - padding - (score / 100) * (height - padding * 2);
+                        return { x, y, score, entry };
+                      });
+                      if (points.length === 0) return null;
+                      const path = points
+                        .map((point, index) =>
+                          `${index === 0 ? "M" : "L"}${point.x},${point.y}`
+                        )
+                        .join(" ");
+                      return (
+                        <g>
+                          <path
+                            d={path}
+                            fill="none"
+                            stroke="url(#scoreGlow)"
+                            strokeWidth="4"
                           />
-                          <text
-                            x={point.x}
-                            y={point.y - 14}
-                            textAnchor="middle"
-                            fill="#ffb347"
-                            fontSize="12"
-                          >
-                            {Math.round(point.score)}
-                          </text>
+                          {points.map((point, index) => (
+                            <g key={`${point.entry.created_at}-${index}`}>
+                              <circle
+                                cx={point.x}
+                                cy={point.y}
+                                r="6"
+                                fill="#0c0f16"
+                                stroke="#ffb347"
+                                strokeWidth="3"
+                              />
+                              <text
+                                x={point.x}
+                                y={point.y - 14}
+                                textAnchor="middle"
+                                fill="#ffb347"
+                                fontSize="12"
+                              >
+                                {Math.round(point.score)}
+                              </text>
+                            </g>
+                          ))}
                         </g>
-                      ))}
-                    </g>
-                  );
-                })()}
-              </svg>
-              <div className="timeline-labels">
-                {satisfactionHistory.map((entry, index) => (
-                  <span key={`${entry.created_at}-${index}`}>
-                    {new Date(entry.created_at).toLocaleDateString()}
-                  </span>
-                ))}
-              </div>
-            </div>
+                      );
+                    })()}
+                  </svg>
+                  <div className="timeline-labels">
+                    {satisfactionHistory.map((entry, index) => (
+                      <span key={`${entry.created_at}-${index}`}>
+                        {new Date(entry.created_at).toLocaleDateString()}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                {data?.delta_report && (
+                  <div className="delta-panel">
+                    <div className="board-header">
+                      <div>
+                        <h3>Delta Report</h3>
+                        <p>What changed since the last refresh.</p>
+                      </div>
+                    </div>
+                    <div className="delta-grid">
+                      <div className="delta-card">
+                        <h4>Metric Deltas</h4>
+                        {(data.delta_report.metric_deltas || []).map((item, idx) => (
+                          <div key={idx} className="delta-item">
+                            <strong>{item.metric}</strong>
+                            <span>{item.delta}</span>
+                            <p className="muted">{item.reasoning}</p>
+                          </div>
+                        ))}
+                        {(data.delta_report.metric_deltas || []).length === 0 && (
+                          <p className="muted">No metric deltas reported.</p>
+                        )}
+                      </div>
+                      <div className="delta-card">
+                        <h4>Identity Drift</h4>
+                        {(data.delta_report.identity_drift || []).map((item, idx) => (
+                          <div key={idx} className="delta-item">
+                            <strong>{item.frame}</strong>
+                            <span>{item.change}</span>
+                            <p className="muted">{item.reasoning}</p>
+                          </div>
+                        ))}
+                        {(data.delta_report.identity_drift || []).length === 0 && (
+                          <p className="muted">No identity drift reported.</p>
+                        )}
+                      </div>
+                      <div className="delta-card">
+                        <h4>Emerging Narratives</h4>
+                        {(data.delta_report.emerging_narratives || []).map((item, idx) => (
+                          <div key={idx} className="delta-item">
+                            <span className="chip">{item.type || "narrative"}</span>
+                            <p>{item.description}</p>
+                          </div>
+                        ))}
+                        {(data.delta_report.emerging_narratives || []).length === 0 && (
+                          <p className="muted">No emerging narratives reported.</p>
+                        )}
+                      </div>
+                      <div className="delta-card">
+                        <h4>Competitor Shifts</h4>
+                        {(data.delta_report.competitor_shifts || []).map((item, idx) => (
+                          <div key={idx} className="delta-item">
+                            <strong>{item.competitor}</strong>
+                            <span>{item.change}</span>
+                            <p className="muted">{item.reasoning}</p>
+                          </div>
+                        ))}
+                        {(data.delta_report.competitor_shifts || []).length === 0 && (
+                          <p className="muted">No competitor shifts reported.</p>
+                        )}
+                      </div>
+                      <div className="delta-card">
+                        <h4>Emotion Changes</h4>
+                        {(data.delta_report.emotion_changes || []).map((item, idx) => (
+                          <div key={idx} className="delta-item">
+                            <strong>{item.emotion}</strong>
+                            <span>{item.delta}</span>
+                            <p className="muted">{item.reasoning}</p>
+                          </div>
+                        ))}
+                        {(data.delta_report.emotion_changes || []).length === 0 && (
+                          <p className="muted">No emotion changes reported.</p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
           </section>
         )}
 

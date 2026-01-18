@@ -420,6 +420,9 @@ button {
   border-left: 3px solid var(--accent);
   background: #0b0d12;
   border-radius: 8px;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  max-width: 100%;
 }
 
 .timeline-list {
@@ -443,6 +446,7 @@ button {
   border: 1px solid var(--stroke);
   border-radius: 16px;
   padding: 16px;
+  position: relative;
 }
 
 .timeline-chart svg {
@@ -456,6 +460,144 @@ button {
   color: var(--muted);
   font-size: 0.75rem;
   margin-top: 8px;
+}
+
+.perception-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  margin: 20px 0;
+}
+
+.perception-card {
+  background: #0c0f16;
+  border: 1px solid var(--stroke);
+  border-radius: 14px;
+  padding: 14px;
+}
+
+.identity-list,
+.narrative-list {
+  display: grid;
+  gap: 10px;
+}
+
+.identity-group {
+  display: grid;
+  gap: 8px;
+}
+
+.identity-item,
+.narrative-item {
+  background: #0b0d12;
+  border: 1px solid var(--stroke);
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.identity-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.identity-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.muted {
+  color: var(--muted);
+  margin: 4px 0;
+}
+
+.emotion-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.emotion-bar {
+  background: #0b0d12;
+  border: 1px solid var(--stroke);
+  border-radius: 10px;
+  padding: 10px;
+}
+
+.emotion-label {
+  display: flex;
+  justify-content: space-between;
+  color: var(--ink);
+}
+
+.emotion-track {
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: #1a1f2c;
+  margin-top: 6px;
+  overflow: hidden;
+}
+
+.emotion-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+}
+
+.delta-panel {
+  margin-top: 14px;
+  background: var(--panel);
+  border: 1px solid var(--stroke);
+  border-radius: 16px;
+  padding: 16px;
+}
+
+.delta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.delta-card {
+  background: #0c0f16;
+  border: 1px solid var(--stroke);
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.delta-item {
+  background: #0b0d12;
+  border: 1px solid var(--stroke);
+  border-radius: 10px;
+  padding: 10px;
+  margin: 6px 0;
+}
+
+.coach {
+  margin: 16px 0;
+  background: #0c0f16;
+  border: 1px solid var(--stroke);
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.coach h4 {
+  margin: 0 0 8px;
+}
+
+.coach ul {
+  margin: 0;
+  padding-left: 16px;
+  color: var(--muted);
+}
+
+.history {
+  margin-top: 12px;
+}
+
+.history.open {
+  margin-top: 20px;
 }
 
 .comment-controls {

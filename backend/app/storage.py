@@ -43,6 +43,30 @@ def _save_products(products: List[Dict[str, object]]) -> None:
     PRODUCTS_PATH.write_text(json.dumps(products, indent=2), encoding="utf-8")
 
 
+def add_event(event: Dict[str, object]) -> None:
+    events_path = DATA_DIR / "events.json"
+    if not events_path.exists():
+        events_path.write_text("[]", encoding="utf-8")
+    try:
+        items = json.loads(events_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        items = []
+    items.append(event)
+    events_path.write_text(json.dumps(items, indent=2), encoding="utf-8")
+
+
+def get_recent_events(product_id: str, limit: int = 50) -> List[Dict[str, object]]:
+    events_path = DATA_DIR / "events.json"
+    if not events_path.exists():
+        return []
+    try:
+        items = json.loads(events_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    filtered = [ev for ev in reversed(items) if ev.get("product_id") == product_id]
+    return filtered[:limit]
+
+
 def add_product(name: str) -> Dict[str, object]:
     products = _load_products()
     product_id = str(uuid.uuid4())
@@ -57,6 +81,9 @@ def add_product(name: str) -> Dict[str, object]:
         "topics_ready": False,
         "satisfaction": {},
         "satisfaction_history": [],
+        "perception": {},
+        "perception_history": [],
+        "delta_report": {},
     }
     products.insert(0, record)
     _save_products(products)

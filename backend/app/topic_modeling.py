@@ -11,7 +11,12 @@ def _extract_comment_texts(archetype: Dict[str, object]) -> List[str]:
     return texts
 
 
-def add_archetype_topics(archetypes: List[Dict[str, object]], top_n: int = 5) -> List[Dict[str, object]]:
+def add_archetype_topics(
+    archetypes: List[Dict[str, object]],
+    top_n: int = 5,
+    product_name: str = "",
+    model_name: str = None,
+) -> List[Dict[str, object]]:
     try:
         from bertopic import BERTopic
         from sklearn.feature_extraction.text import CountVectorizer
@@ -48,7 +53,18 @@ def add_archetype_topics(archetypes: List[Dict[str, object]], top_n: int = 5) ->
                 }
             )
 
-        archetype["topics"] = enriched_topics[:top_n]
+        try:
+            from .gemini_client import summarize_topics_with_gemini
+        except ImportError:
+            from gemini_client import summarize_topics_with_gemini
+
+        summarized = summarize_topics_with_gemini(
+            product_name,
+            archetype.get("name", ""),
+            enriched_topics[:top_n],
+            model_name=model_name,
+        )
+        archetype["topics"] = summarized
         archetype["topic_comment_count"] = len(documents)
 
     return archetypes

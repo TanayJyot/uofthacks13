@@ -6,15 +6,19 @@ from flask_cors import CORS
 
 try:
     from .gemini_client import (
+        analyze_perception,
         classify_comments_into_archetypes,
+        generate_delta_report,
         score_archetype_satisfaction_acsi,
         suggest_subreddits,
     )
     from .pipeline import run_product_pipeline
     from .storage import (
+        add_event,
         add_product,
         find_product_by_name,
         get_product,
+        get_recent_events,
         list_products,
         update_product,
         update_product_state,
@@ -22,15 +26,19 @@ try:
     from .topic_modeling import add_archetype_topics
 except ImportError:  # Allows running as a script without package context.
     from gemini_client import (
+        analyze_perception,
         classify_comments_into_archetypes,
+        generate_delta_report,
         score_archetype_satisfaction_acsi,
         suggest_subreddits,
     )
     from pipeline import run_product_pipeline
     from storage import (
+        add_event,
         add_product,
         find_product_by_name,
         get_product,
+        get_recent_events,
         list_products,
         update_product,
         update_product_state,
@@ -142,6 +150,25 @@ def pipeline():
             "archetypes": satisfaction_archetypes,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
+        all_comments = []
+        for archetype in result.get("archetypes", []):
+            all_comments.extend(archetype.get("comments", []))
+        perception = analyze_perception(
+            product,
+            all_comments,
+            model_name=model_name,
+        )
+        previous_perception = (
+            product_record.get("perception_history", [])[-1]
+            if product_record.get("perception_history")
+            else None
+        )
+        delta_report = generate_delta_report(
+            product,
+            {"perception": perception, "satisfaction": satisfaction},
+            {"perception": previous_perception, "satisfaction": product_record.get("satisfaction")},
+            model_name=model_name,
+        )
         update_product(
             product_id,
             {
@@ -164,6 +191,15 @@ def pipeline():
                         ],
                     },
                 ],
+                "perception": {**perception, "updated_at": datetime.now(timezone.utc).isoformat()},
+                "perception_history": [
+                    *product_record.get("perception_history", []),
+                    {
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                        **perception,
+                    },
+                ],
+                "delta_report": {**delta_report, "created_at": datetime.now(timezone.utc).isoformat()},
             },
         )
         stored = {
@@ -186,7 +222,29 @@ def pipeline():
                     ],
                 }
             ],
+            "perception": {**perception, "updated_at": datetime.now(timezone.utc).isoformat()},
+            "perception_history": product_record.get("perception_history", [])
+            + [
+                {
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    **perception,
+                }
+            ],
+            "delta_report": {**delta_report, "created_at": datetime.now(timezone.utc).isoformat()},
         }
+        add_event(
+            {
+                "type": "pipeline_run_completed",
+                "product_id": product_id,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "details": {
+                    "subreddits": stored.get("subreddits", []),
+                    "posts": len(stored.get("posts", [])),
+                    "comments": sum(len(a.get("comments", [])) for a in stored.get("archetypes", [])),
+                    "overall_satisfaction": satisfaction.get("overall_score"),
+                },
+            }
+        )
     except RuntimeError as exc:
         return jsonify(error=str(exc)), 400
     except Exception as exc:
@@ -247,7 +305,12 @@ def topics():
 
     try:
         archetypes = product.get("archetypes", [])
-        updated_archetypes = add_archetype_topics(archetypes, top_n=top_n)
+        updated_archetypes = add_archetype_topics(
+            archetypes,
+            top_n=top_n,
+            product_name=product.get("name", ""),
+            model_name=model_name,
+        )
         updated = update_product_state(
             product_id,
             {"archetypes": updated_archetypes, "topics_ready": True},
@@ -384,6 +447,14 @@ def refresh():
         "archetypes": satisfaction_archetypes,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
+    refreshed_comments = []
+    for archetype in updated_archetypes:
+        refreshed_comments.extend(archetype.get("comments", []))
+    perception = analyze_perception(
+        product.get("name", ""),
+        refreshed_comments,
+        model_name=model_name,
+    )
     updated = update_product(
         product_id,
         {
@@ -404,12 +475,82 @@ def refresh():
                     ],
                 },
             ],
+            "perception": {**perception, "updated_at": datetime.now(timezone.utc).isoformat()},
+            "perception_history": [
+                *product.get("perception_history", []),
+                {
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    **perception,
+                },
+            ],
+            "delta_report": {
+                **delta_report,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            },
         },
     )
     if updated:
         updated["new_comments_added"] = len(new_comments)
+        add_event(
+            {
+                "type": "refresh_completed",
+                "product_id": product_id,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "details": {
+                    "new_comments_added": len(new_comments),
+                    "overall_satisfaction": satisfaction.get("overall_score"),
+                },
+            }
+        )
 
     return jsonify(updated)
+
+
+@app.route("/api/events/insights", methods=["POST"])
+def insight_coach():
+    payload = request.get_json(silent=True) or {}
+    product_id = (payload.get("product_id") or "").strip()
+    last_action = payload.get("last_action") or ""
+    recent = get_recent_events(product_id, limit=50) if product_id else []
+
+    suggestions = []
+    if last_action == "viewed_satisfaction" and product_id:
+        suggestions.append(
+            "Explore identity frames and narratives for drivers behind satisfaction changes."
+        )
+
+    expanded_metrics = [ev for ev in recent if ev.get("type") == "metric_expanded"]
+    if expanded_metrics:
+        top_metric = expanded_metrics[0].get("details", {}).get("metric", "a metric")
+        suggestions.append(f"Dive deeper into {top_metric}: compare evidence across archetypes.")
+
+    if not any(ev.get("type") == "refresh_completed" for ev in recent):
+        suggestions.append("Run refresh to capture the latest community signals.")
+
+    if not any(ev.get("type") == "topic_model_ran" for ev in recent):
+        suggestions.append("Run topic modeling to label emerging clusters.")
+
+    if not suggestions:
+        suggestions.append("No specific guidance now—refresh or expand metrics for more insights.")
+
+    return jsonify({"suggestions": suggestions})
+
+
+@app.route("/api/events", methods=["POST"])
+def record_event():
+    payload = request.get_json(silent=True) or {}
+    event_type = payload.get("type") or "unknown"
+    product_id = payload.get("product_id")
+    details = payload.get("details", {})
+    add_event(
+        {
+            "type": event_type,
+            "product_id": product_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "details": details,
+        }
+    )
+    return jsonify({"status": "ok"})
 
 
 if __name__ == "__main__":

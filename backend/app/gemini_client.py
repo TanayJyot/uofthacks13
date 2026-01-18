@@ -62,6 +62,29 @@ def _extract_json_list(text: str) -> List[dict]:
     return []
 
 
+def _extract_json_object(text: str) -> dict:
+    if not text:
+        return {}
+    text = text.strip()
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+
+    match = re.search(r"\{[\s\S]*\}", text)
+    if match:
+        try:
+            parsed = json.loads(match.group(0))
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+    return {}
+
+
 def _load_env_fallback() -> None:
     candidate_paths = [
         Path.cwd() / ".env",
@@ -268,6 +291,157 @@ def classify_comments_into_archetypes(
     return grouped
 
 
+def _select_comment_subset(
+    comments: Sequence[Dict[str, object]],
+    max_comments: int,
+) -> List[Dict[str, object]]:
+    deduped = []
+    seen = set()
+    for comment in comments:
+        cid = comment.get("comment_id")
+        if not cid or cid in seen:
+            continue
+        seen.add(cid)
+        deduped.append(comment)
+
+    if len(deduped) <= max_comments:
+        return deduped
+
+    half = max_comments // 2
+    by_score = sorted(deduped, key=lambda c: c.get("score", 0), reverse=True)[:half]
+    by_recent = sorted(deduped, key=lambda c: c.get("created_utc", 0), reverse=True)[
+        : max_comments - len(by_score)
+    ]
+
+    merged = []
+    merged_seen = set()
+    for comment in by_score + by_recent:
+        cid = comment.get("comment_id")
+        if cid and cid not in merged_seen:
+            merged_seen.add(cid)
+            merged.append(comment)
+
+    return merged
+
+
+def _serialize_comment_list(
+    comments: Sequence[Dict[str, object]],
+    max_comments: int,
+) -> List[str]:
+    serialized = []
+    for comment in _select_comment_subset(comments, max_comments):
+        cid = comment.get("comment_id")
+        body = (comment.get("body") or "").strip()
+        if cid and body:
+            serialized.append(f"{cid}: {body[:500]}")
+    return serialized
+
+
+def analyze_perception(
+    product_name: str,
+    comments: Sequence[Dict[str, object]],
+    model_name: str = None,
+    max_comments: int = 120,
+) -> Dict[str, object]:
+    if not os.environ.get("GEMINI_API_KEY"):
+        _load_env_fallback()
+
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY is not set")
+
+    model_name = model_name or _get_default_model_name()
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel(model_name)
+
+    comments_text = _serialize_comment_list(comments, max_comments=max_comments)
+
+    prompt = (
+        "You are analyzing perception signals for a product using all comments. "
+        "Return ONLY a JSON object with keys: identity_frames, narratives, competitors, emotion. "
+        "identity_frames: list of {label, polarity, strength (0-1), reasoning, evidence_comment_ids}. "
+        "narratives: list of {type, template, explanation, reasoning, evidence_comment_ids}. "
+        "competitors: list of {name, dimensions, stance, reasoning, evidence_comment_ids}. "
+        "emotion: object with keys trust, hype, disappointment, frustration, nostalgia; "
+        "each value is {score (0-100), confidence, reasoning, evidence_comment_ids}. "
+        f"Product: {product_name}. "
+        "Comments:\n"
+        + "\n".join(comments_text)
+    )
+
+    response = model.generate_content(prompt)
+    raw_text = response.text or ""
+    data = _extract_json_object(raw_text)
+
+    def _clean_list(items):
+        return items if isinstance(items, list) else []
+
+    return {
+        "identity_frames": _clean_list(data.get("identity_frames", [])),
+        "narratives": _clean_list(data.get("narratives", [])),
+        "competitors": _clean_list(data.get("competitors", [])),
+        "emotion": data.get("emotion", {}),
+    }
+
+
+def generate_delta_report(
+    product_name: str,
+    current: Dict[str, object],
+    previous: Optional[Dict[str, object]] = None,
+    model_name: str = None,
+) -> Dict[str, object]:
+    if not os.environ.get("GEMINI_API_KEY"):
+        _load_env_fallback()
+
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY is not set")
+
+    model_name = model_name or _get_default_model_name()
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel(model_name)
+
+    def safe_json(obj):
+        try:
+            return json.dumps(obj)
+        except Exception:
+            return "{}"
+
+    prompt = (
+        "You are generating a delta report between two snapshots of customer perception and satisfaction. "
+        "Return ONLY a JSON object with keys: metric_deltas, identity_drift, emerging_narratives, "
+        "competitor_shifts, emotion_changes, summary. "
+        "metric_deltas: list of {metric, delta, reasoning}. "
+        "identity_drift: list of {frame, change, reasoning}. "
+        "emerging_narratives: list of {type, description, evidence_comment_ids}. "
+        "competitor_shifts: list of {competitor, change, reasoning}. "
+        "emotion_changes: list of {emotion, delta, reasoning}. "
+        "summary: short paragraph on what changed and why. "
+        f"Product: {product_name}. "
+        f"Current snapshot: {safe_json(current)} "
+        f"Previous snapshot: {safe_json(previous) if previous else '{}'}"
+    )
+
+    response = model.generate_content(prompt)
+    raw_text = response.text or ""
+    try:
+        data = json.loads(raw_text)
+    except json.JSONDecodeError:
+        data = {}
+
+    def _clean_list(items):
+        return items if isinstance(items, list) else []
+
+    return {
+        "metric_deltas": _clean_list(data.get("metric_deltas", [])),
+        "identity_drift": _clean_list(data.get("identity_drift", [])),
+        "emerging_narratives": _clean_list(data.get("emerging_narratives", [])),
+        "competitor_shifts": _clean_list(data.get("competitor_shifts", [])),
+        "emotion_changes": _clean_list(data.get("emotion_changes", [])),
+        "summary": data.get("summary", ""),
+    }
+
+
 def score_archetype_satisfaction_acsi(
     product_name: str,
     archetypes: Sequence[Dict[str, object]],
@@ -349,6 +523,61 @@ def score_archetype_satisfaction_acsi(
         )
 
     return scored
+
+
+def summarize_topics_with_gemini(
+    product_name: str,
+    archetype_name: str,
+    topics: Sequence[Dict[str, object]],
+    model_name: str = None,
+) -> List[Dict[str, object]]:
+    if not os.environ.get("GEMINI_API_KEY"):
+        _load_env_fallback()
+
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY is not set")
+
+    model_name = model_name or _get_default_model_name()
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel(model_name)
+
+    topic_lines = []
+    for topic in topics:
+        topic_id = topic.get("topic_id")
+        keywords = topic.get("keywords", [])
+        count = topic.get("count", 0)
+        topic_lines.append(f"{topic_id}: {keywords} (count={count})")
+
+    prompt = (
+        "You are labeling BERTopic clusters. "
+        "Return ONLY a JSON array with objects: topic_id, label, reasoning. "
+        "Use the keywords to infer concise labels. "
+        f"Product: {product_name}. Archetype: {archetype_name}. "
+        "Topics:\n"
+        + "\n".join(topic_lines)
+    )
+
+    response = model.generate_content(prompt)
+    raw_text = response.text or ""
+    parsed = _extract_json_list(raw_text)
+
+    label_map = {}
+    for item in parsed:
+        topic_id = item.get("topic_id")
+        if topic_id is None:
+            continue
+        label_map[int(topic_id)] = {
+            "label": str(item.get("label", "")).strip(),
+            "reasoning": str(item.get("reasoning", "")).strip(),
+        }
+
+    enriched = []
+    for topic in topics:
+        meta = label_map.get(int(topic.get("topic_id", -1)), {})
+        enriched.append({**topic, **meta})
+
+    return enriched
 
 
 def filter_subreddits_by_description(
