@@ -290,6 +290,7 @@ def topics():
     payload = request.get_json(silent=True) or {}
     product_id = (payload.get("product_id") or "").strip()
     top_n = payload.get("top_n", 5)
+    model_name = payload.get("model")
 
     if not product_id:
         return jsonify(error="product_id is required"), 400

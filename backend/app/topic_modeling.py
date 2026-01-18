@@ -30,7 +30,13 @@ def add_archetype_topics(
             archetype["topic_comment_count"] = len(documents)
             continue
 
-        vectorizer = CountVectorizer(stop_words="english", ngram_range=(1, 2), min_df=2)
+        min_df = 1 if len(documents) < 5 else 2
+        vectorizer = CountVectorizer(
+            stop_words="english",
+            ngram_range=(1, 2),
+            min_df=min_df,
+            max_df=1.0,
+        )
         topic_model = BERTopic(
             vectorizer_model=vectorizer,
             min_topic_size=5,
